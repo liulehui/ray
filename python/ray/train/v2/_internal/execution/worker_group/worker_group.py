@@ -1,6 +1,7 @@
 import collections
 import logging
 import os
+import time
 import traceback
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, TypeVar, Union
@@ -253,6 +254,9 @@ class WorkerGroup:
             WorkerGroupStartupTimeoutError: If startup times out requesting resources.
             WorkerGroupStartupFailedError: If workers fail during initialization.
         """
+        logger.info(
+            f">>> lehui testing worker group log in WorkerGroup._start_impl: {time.monotonic()}, beginning "
+        )
         self._assert_inactive()
         worker_group_context = self._worker_group_context
 
@@ -294,6 +298,9 @@ class WorkerGroup:
             # time out if this hangs for a while to try again with a different size.
             # For example, the controller may try to set a worker group size
             # based on stale information about cluster resources.
+            logger.info(
+                f">>> lehui testing worker group log in WorkerGroup._start_impl: {time.monotonic()}, defined pg."
+            )
             try:
                 ray.get(pg.ready(), timeout=self._worker_group_start_timeout_s)
             except GetTimeoutError as timeout_exc:
@@ -303,6 +310,9 @@ class WorkerGroup:
                 ) from timeout_exc
 
             # TODO: Figure out ordering between these different calls/callbacks.
+            logger.info(
+                f">>> lehui testing worker group log in WorkerGroup._start_impl: {time.monotonic()}, pg is ready."
+            )
             worker_group_state_builder.with_placement_group(pg)
 
             # Initialize the synchronization actor on the driver node
@@ -341,7 +351,6 @@ class WorkerGroup:
                             arg not in train_context_args
                         ), f"Callback {callable} returned {arg} which is already set."
                         train_context_args[arg] = arg_values
-
                 self._init_train_context_on_workers(
                     workers, sync_actor, train_context_args
                 )
