@@ -32,7 +32,7 @@ profile_worker_group_startup_bottlenecks()
 
 ```python
 from worker_group_profiler import (
-    setup_ray_train_profiling, 
+    setup_ray_train_profiling,
     profile_worker_group_startup,
     RayTrainProfilingConfig
 )
@@ -50,17 +50,17 @@ setup_ray_train_profiling(config)
 # Use in your training code
 with profile_worker_group_startup("both", config.output_dir) as profilers:
     from ray.train.v2 import DataParallelTrainer
-    
+
     def my_train_fn():
         # Your training function
         pass
-    
+
     trainer = DataParallelTrainer(
         train_loop_per_worker=my_train_fn,
         scaling_config={"num_workers": 4, "use_gpu": True},
         run_config={"name": "profiled_training"}
     )
-    
+
     result = trainer.fit()
 ```
 
@@ -120,16 +120,16 @@ Total startup time: 15.234s
 Phase breakdown:
   before_worker_group_start: 0.001s (0.0%)
     Metadata: {'num_workers': 4, 'resources_per_worker': {'CPU': 1, 'GPU': 1}}
-  
+
   placement_group_creation: 8.456s (55.5%)
     Metadata: {'placement_strategy': 'PACK'}
-  
+
   actor_creation: 3.234s (21.2%)
     Metadata: {'num_workers': 4}
-  
+
   context_initialization: 2.123s (13.9%)
     Metadata: {'num_workers': 4}
-  
+
   after_worker_group_start: 1.420s (9.3%)
     Metadata: {'num_workers': 4, 'worker_ips': ['192.168.1.10', '192.168.1.11']}
 ```
@@ -156,7 +156,7 @@ Recommendations:
 ### 1. Placement Group Creation (Most Common)
 
 **Symptoms**: Long wait times for placement group to be ready
-**Causes**: 
+**Causes**:
 - Insufficient cluster resources
 - Resource fragmentation
 - Network issues between nodes
@@ -264,7 +264,7 @@ export RAY_TRAIN_PROFILING_LOG_LEVEL="DEBUG"
 Typical startup times for reference:
 
 - **Small cluster (2-4 workers, CPU only)**: 2-5 seconds
-- **Medium cluster (4-8 workers, with GPU)**: 5-15 seconds  
+- **Medium cluster (4-8 workers, with GPU)**: 5-15 seconds
 - **Large cluster (8+ workers, multi-GPU)**: 10-30 seconds
 
 Times exceeding these ranges indicate potential bottlenecks that should be investigated.
@@ -285,4 +285,4 @@ For issues with the profiling tools:
 1. Check the profiling logs for errors
 2. Verify Ray Train version compatibility
 3. Report issues with detailed reproduction steps
-4. Include profiling output files when reporting bugs 
+4. Include profiling output files when reporting bugs
