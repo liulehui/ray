@@ -6,6 +6,12 @@ This script provides targeted profiling to identify specific bottlenecks
 in the worker group startup process.
 """
 
+import os
+
+os.environ["RAY_TRAIN_V2_ENABLED"] = "1"
+
+print(os.environ)
+
 import time
 import logging
 import traceback
@@ -15,8 +21,13 @@ import json
 from pathlib import Path
 
 import ray
+
 from ray.train.v2._internal.execution.worker_group import WorkerGroup
 from ray.train.v2._internal.execution.callback import WorkerGroupCallback
+from ray.train.v2._internal.util import get_callable_name
+
+
+from ray.train import ScalingConfig
 
 
 @dataclass
@@ -244,9 +255,14 @@ def instrument_worker_group_startup():
     """
     Instrument the WorkerGroup startup methods to add detailed timing.
     """
+    print(">>> try to override the original wg start_impl, create_worker etc...")
     original_start_impl = WorkerGroup._start_impl
     original_create_workers = WorkerGroup._create_workers
     original_init_train_context = WorkerGroup._init_train_context_on_workers
+    print(
+        ">>> get callable name original start impl:",
+        get_callable_name(original_start_impl),
+    )
 
     def instrumented_start_impl(self, worker_group_state_builder):
         """Instrumented version of _start_impl with detailed timing."""
@@ -439,6 +455,10 @@ def instrument_worker_group_startup():
     # Apply the instrumented versions
     WorkerGroup._start_impl = instrumented_start_impl
     WorkerGroup._create_workers = instrumented_create_workers
+    print(
+        ">>> get callable name instrumented start impl:",
+        get_callable_name(instrumented_start_impl),
+    )
 
 
 def profile_worker_group_startup_bottlenecks():
@@ -449,7 +469,9 @@ def profile_worker_group_startup_bottlenecks():
     print("=" * 50)
 
     # Setup profiling
-    profiler = WorkerGroupStartupProfiler("/tmp/worker_group_startup_profiling")
+    profiler = WorkerGroupStartupProfiler(
+        "/Users/lehui/Desktop/Anyscale/profiling_wg_startup/"
+    )
     instrument_worker_group_startup()
 
     # Example training function
@@ -459,29 +481,53 @@ def profile_worker_group_startup_bottlenecks():
         time.sleep(1)
 
     try:
-        # Create a simple trainer to trigger worker group startup
-        from ray.train.v2 import DataParallelTrainer
+        from ray.train.xgboost import XGBoostTrainer
 
-        trainer = DataParallelTrainer(
-            train_loop_per_worker=simple_train_fn,
-            scaling_config={"num_workers": 2, "use_gpu": False},
-            run_config={"name": "startup_profiling_test"},
+        run_config = ray.train.RunConfig(
+            checkpoint_config=ray.train.CheckpointConfig(
+                # Checkpoint every 10 iterations.
+                checkpoint_frequency=10,
+                # Only keep the latest checkpoint.
+                num_to_keep=1,
+            ),
+            callbacks=[profiler],
         )
 
+        ray_xgbooster_trainer = XGBoostTrainer(
+            simple_train_fn,
+            train_loop_config={
+                "xgboost_params": {
+                    "objective": "binary:logistic",
+                    "eval_metric": ["logloss", "error"],
+                }
+            },
+            scaling_config=ScalingConfig(
+                # Number of workers for data parallelism.
+                num_workers=2,
+                # Set to True to use GPU acceleration.
+                use_gpu=False,
+            ),
+            run_config=run_config,
+        )
+
+        # result: Result = ray_xgbooster_trainer.fit()
+        # print(f"Ray train result:", result)
+
         # Add our profiler to the callbacks
-        original_callbacks = trainer._create_default_callbacks
+        # original_callbacks = ray_xgbooster_trainer._create_default_callbacks
 
-        def profiled_callbacks():
-            callbacks = original_callbacks()
-            callbacks.append(profilers)
-            return callbacks
+        # def profiled_callbacks():
+        #     callbacks = original_callbacks()
+        #     callbacks.append(profiler)
+        #     return callbacks
 
-        trainer._create_default_callbacks = profiled_callbacks
+        # ray_xgbooster_trainer._create_default_callbacks = profiled_callbacks
 
         print("Starting training run to profile worker group startup...")
-        result = trainer.fit()
+        result = ray_xgbooster_trainer.fit()
 
         print("Training completed successfully!")
+        print("Ray train result:", result)
 
     except Exception as e:
         print(f"Training failed: {e}")
@@ -490,7 +536,7 @@ def profile_worker_group_startup_bottlenecks():
     finally:
         # Save profiling results
         profiler.save_results()
-        print(f"\nProfiling results saved to {profilers.output_dir}")
+        print(f"\nProfiling results saved to {profiler.output_dir}")
         print("Check the following files for detailed analysis:")
         print("  - startup_phases.json: Detailed phase timing")
         print("  - startup_summary.txt: Summary report")
