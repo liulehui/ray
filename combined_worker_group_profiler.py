@@ -27,6 +27,7 @@ from ray.train.v2._internal.execution.worker_group import WorkerGroup
 # Global registry to avoid closure serialization issues
 _global_combined_profiler = None
 
+
 @dataclass
 class RayOperation:
     """Represents a Ray operation (get/wait) with timing details."""

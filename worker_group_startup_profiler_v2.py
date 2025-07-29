@@ -6,12 +6,12 @@ This version uses Ray Train callbacks instead of monkey patching to avoid
 override issues and provide better visibility into the startup process.
 """
 
-import os 
+import os
+
 os.environ["RAY_TRAIN_V2_ENABLED"] = "1"
 
 import time
 import logging
-import traceback
 from contextlib import contextmanager
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
@@ -19,7 +19,6 @@ import json
 from pathlib import Path
 from collections import defaultdict
 
-import ray
 from ray.train.v2._internal.execution.callback import WorkerGroupCallback
 from ray.train.v2._internal.execution.worker_group import WorkerGroup
 
@@ -166,34 +165,37 @@ class WorkerGroupStartupProfilerV2(WorkerGroupCallback):
 
     @contextmanager
     def on_worker_group_start(self):
-        print(">>> wg v2 callbacks are connected correctly and use to profile the startup time")
+        print(
+            ">>> wg v2 callbacks are connected correctly and use to profile the startup time"
+        )
         """Measure time taken to start worker group."""
         self.profiler = cProfile.Profile()
         self.profiler.enable()
-        
+
         yield
 
         if self.profiler:
             self.profiler.disable()
-            
-            
+
             # Generate readable stats
             stats = pstats.Stats(self.profiler)
             self.profiler.dump_stats(str(self.output_dir / "cprofile_stats.prof"))
             # works, once get it can use snakemake to generate the stats
             stats_file = self.output_dir / "cprofile_stats.txt"
-            with open(stats_file, 'w') as f:
+            with open(stats_file, "w") as f:
                 # Redirect stdout to capture stats output
                 old_stdout = sys.stdout
                 sys.stdout = f
-                stats.sort_stats('cumulative')
+                stats.sort_stats("cumulative")
                 stats.print_stats(50)  # Top 50 functions
                 stats.print_callers(20)  # Top 20 callers
                 sys.stdout = old_stdout
 
     def after_worker_group_start(self, worker_group: WorkerGroup):
         """Called after the worker group has started."""
-        print(">>> checking if the v2 callbacks are connected correctly for Worker group start callback triggered")
+        print(
+            ">>> checking if the v2 callbacks are connected correctly for Worker group start callback triggered"
+        )
         self.logger.info("Worker group after wg start callback triggered")
         # Get worker group information
         worker_info = self._get_worker_group_info(worker_group)
