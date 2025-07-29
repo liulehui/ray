@@ -6,6 +6,9 @@ This version uses Ray Train callbacks instead of monkey patching to avoid
 override issues and provide better visibility into the startup process.
 """
 
+import os 
+os.environ["RAY_TRAIN_V2_ENABLED"] = "1"
+
 import time
 import logging
 import traceback
@@ -14,12 +17,15 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
 import json
 from pathlib import Path
-import threading
 from collections import defaultdict
 
 import ray
 from ray.train.v2._internal.execution.callback import WorkerGroupCallback
 from ray.train.v2._internal.execution.worker_group import WorkerGroup
+
+import cProfile
+import pstats
+import sys
 
 
 @dataclass
@@ -60,9 +66,6 @@ class WorkerGroupStartupProfilerV2(WorkerGroupCallback):
         self.phases: List[StartupPhase] = []
         self.current_phase: Optional[StartupPhase] = None
 
-        # Thread safety
-        self.lock = threading.Lock()
-
         # Statistics
         self.stats = {
             "total_startup_time": 0.0,
@@ -82,75 +85,47 @@ class WorkerGroupStartupProfilerV2(WorkerGroupCallback):
     def _setup_logging(self):
         """Setup detailed logging for the profiler."""
         logger = logging.getLogger("WorkerGroupStartupProfilerV2")
-        logger.setLevel(logging.DEBUG)
-
-        # Clear existing handlers
-        for handler in logger.handlers[:]:
-            logger.removeHandler(handler)
-
-        # File handler
-        file_handler = logging.FileHandler(
-            self.output_dir / "worker_group_startup_profiling.log"
-        )
-        file_handler.setLevel(logging.DEBUG)
-
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-
-        # Formatter
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
-
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
-
         return logger
 
     def _start_phase(self, name: str, details: Dict[str, Any] = None) -> StartupPhase:
         """Start tracking a new phase."""
-        with self.lock:
-            phase = StartupPhase(
-                name=name, start_time=time.monotonic(), details=details or {}
-            )
+        phase = StartupPhase(
+            name=name, start_time=time.monotonic(), details=details or {}
+        )
 
-            self.current_phase = phase
-            self.phases.append(phase)
+        self.current_phase = phase
+        self.phases.append(phase)
 
-            self.logger.info(f"Started phase: {name}")
-            if details:
-                self.logger.debug(f"Phase details: {details}")
+        self.logger.info(f"Started phase: {name}")
+        if details:
+            self.logger.debug(f"Phase details: {details}")
 
-            return phase
+        return phase
 
     def _end_phase(self, name: str, details: Dict[str, Any] = None, error: str = None):
         """End tracking the current phase."""
-        with self.lock:
-            if self.current_phase and self.current_phase.name == name:
-                self.current_phase.finish(details, error)
+        if self.current_phase and self.current_phase.name == name:
+            self.current_phase.finish(details, error)
 
-                # Update statistics
-                self.stats["phase_breakdown"][name] = self.current_phase.duration
+            # Update statistics
+            self.stats["phase_breakdown"][name] = self.current_phase.duration
 
-                # Track slow phases
-                if self.current_phase.duration > 5.0:
-                    self.stats["slow_phases"].append(self.current_phase)
+            # Track slow phases
+            if self.current_phase.duration > 5.0:
+                self.stats["slow_phases"].append(self.current_phase)
 
-                # Track failed phases
-                if error:
-                    self.stats["failed_phases"].append(self.current_phase)
+            # Track failed phases
+            if error:
+                self.stats["failed_phases"].append(self.current_phase)
 
-                # Log phase completion
-                self.logger.info(
-                    f"Completed phase: {name} in {self.current_phase.duration:.3f}s"
-                )
-                if error:
-                    self.logger.error(f"Phase {name} failed: {error}")
+            # Log phase completion
+            self.logger.info(
+                f"Completed phase: {name} in {self.current_phase.duration:.3f}s"
+            )
+            if error:
+                self.logger.error(f"Phase {name} failed: {error}")
 
-                self.current_phase = None
+            self.current_phase = None
 
     def _get_worker_group_info(self, worker_group: WorkerGroup) -> Dict[str, Any]:
         """Extract information about the worker group."""
@@ -189,10 +164,37 @@ class WorkerGroupStartupProfilerV2(WorkerGroupCallback):
             self.logger.warning(f"Could not extract worker group info: {e}")
             return {"error": str(e)}
 
+    @contextmanager
+    def on_worker_group_start(self):
+        print(">>> wg v2 callbacks are connected correctly and use to profile the startup time")
+        """Measure time taken to start worker group."""
+        self.profiler = cProfile.Profile()
+        self.profiler.enable()
+        
+        yield
+
+        if self.profiler:
+            self.profiler.disable()
+            
+            
+            # Generate readable stats
+            stats = pstats.Stats(self.profiler)
+            self.profiler.dump_stats(str(self.output_dir / "cprofile_stats.prof"))
+            # works, once get it can use snakemake to generate the stats
+            stats_file = self.output_dir / "cprofile_stats.txt"
+            with open(stats_file, 'w') as f:
+                # Redirect stdout to capture stats output
+                old_stdout = sys.stdout
+                sys.stdout = f
+                stats.sort_stats('cumulative')
+                stats.print_stats(50)  # Top 50 functions
+                stats.print_callers(20)  # Top 20 callers
+                sys.stdout = old_stdout
+
     def after_worker_group_start(self, worker_group: WorkerGroup):
         """Called after the worker group has started."""
-        self.logger.info("Worker group start callback triggered")
-
+        print(">>> checking if the v2 callbacks are connected correctly for Worker group start callback triggered")
+        self.logger.info("Worker group after wg start callback triggered")
         # Get worker group information
         worker_info = self._get_worker_group_info(worker_group)
         self.worker_group_info = worker_info
@@ -407,64 +409,6 @@ def profile_worker_group_startup_v2(
 
         # Save results
         profiler.save_results()
-
-
-def profile_worker_group_startup_with_callbacks():
-    """
-    Example of profiling worker group startup using the callback-based approach.
-    """
-    print("Worker Group Startup Profiler v2 (Callback-based)")
-    print("=" * 50)
-    print("This version uses Ray Train callbacks instead of monkey patching")
-    print("to avoid override issues and provide better visibility.")
-    print()
-
-    # Initialize Ray
-    if not ray.is_initialized():
-        ray.init()
-
-    # Training function
-    def simple_train_fn():
-        import time
-
-        print("Training function started")
-        time.sleep(2)
-        print("Training function completed")
-
-    # Profile worker group startup using callbacks
-    with profile_worker_group_startup_v2(
-        "/tmp/worker_group_startup_profiling_v2"
-    ) as profiler:
-        try:
-            from ray.train.v2 import DataParallelTrainer
-
-            trainer = DataParallelTrainer(
-                train_loop_per_worker=simple_train_fn,
-                scaling_config={"num_workers": 2, "use_gpu": False},
-                run_config={"name": "worker_group_startup_profiling_v2_test"},
-            )
-
-            # Add the profiler as a callback
-            trainer.add_callbacks([profiler])
-
-            print("Starting training with callback-based worker group profiling...")
-            result = trainer.fit()
-            print("Training completed successfully!")
-
-        except Exception as e:
-            print(f"Training failed: {e}")
-            traceback.print_exc()
-
-    print(
-        "\nWorker group startup profiling results saved to /tmp/worker_group_startup_profiling_v2"
-    )
-    print("Check the following files for detailed analysis:")
-    print("  - startup_phases.json: Detailed phase timing")
-    print("  - worker_group_info.json: Worker group configuration")
-    print("  - startup_summary.txt: Summary report")
-    print("  - bottleneck_analysis.txt: Bottleneck analysis")
-    print("  - detailed_timing.txt: Detailed timing breakdown")
-    print("  - worker_group_startup_profiling.log: Detailed logs")
 
 
 if __name__ == "__main__":

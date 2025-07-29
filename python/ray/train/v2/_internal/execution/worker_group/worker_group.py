@@ -157,6 +157,10 @@ class WorkerGroup:
         callbacks = callbacks or []
         # Group of callbacks that are specific to worker group itself.
         self._callbacks = [c for c in callbacks if isinstance(c, WorkerGroupCallback)]
+
+        # print(">>> checking if the v2 callbacks are connected correctly.")
+        # for c in self._callbacks:
+        #     print(type(c))
         # Group of callbacks that will be propagated and called on the worker actors.
         self._worker_callbacks_to_propagate = [
             c

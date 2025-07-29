@@ -33,6 +33,7 @@ class ControllerMetricsCallback(ControllerCallback, WorkerGroupCallback):
         self._metrics[ControllerMetrics.CONTROLLER_STATE].record(
             TrainControllerStateType.INITIALIZING
         )
+        
 
     def before_controller_shutdown(self):
         """Shutdown metrics before controller shuts down."""
@@ -52,6 +53,8 @@ class ControllerMetricsCallback(ControllerCallback, WorkerGroupCallback):
     @contextmanager
     def on_worker_group_start(self):
         """Measure time taken to start worker group."""
+        # self.profiler = cProfile.Profile()
+        # self.profiler.enable()
         start_time_s = time_monotonic()
         yield
         elapsed_time_s = time_monotonic() - start_time_s

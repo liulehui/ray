@@ -18,13 +18,14 @@ from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 import json
 from pathlib import Path
-import threading
 from collections import defaultdict
 
 import ray
 from ray.train.v2._internal.execution.callback import WorkerGroupCallback
 from ray.train.v2._internal.execution.worker_group import WorkerGroup
 
+# Global registry to avoid closure serialization issues
+_global_combined_profiler = None
 
 @dataclass
 class RayOperation:
@@ -93,9 +94,6 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
         self.current_operations: Dict[int, RayOperation] = {}
         self.operation_counter = 0
 
-        # Thread safety
-        self.lock = threading.Lock()
-
         # Statistics
         self.stats = {
             "total_startup_time": 0.0,
@@ -124,29 +122,6 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
     def _setup_logging(self):
         """Setup detailed logging for the profiler."""
         logger = logging.getLogger("CombinedWorkerGroupProfiler")
-        logger.setLevel(logging.DEBUG)
-
-        # Clear existing handlers
-        for handler in logger.handlers[:]:
-            logger.removeHandler(handler)
-
-        # File handler
-        file_handler = logging.FileHandler(self.output_dir / "combined_profiling.log")
-        file_handler.setLevel(logging.DEBUG)
-
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-
-        # Formatter
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
-
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
 
         return logger
 
@@ -181,48 +156,46 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
 
     def _start_phase(self, name: str, details: Dict[str, Any] = None) -> StartupPhase:
         """Start tracking a new phase."""
-        with self.lock:
-            phase = StartupPhase(
-                name=name,
-                start_time=time.monotonic(),
-                details=details or {},
-                ray_operations=[],
-            )
+        phase = StartupPhase(
+            name=name,
+            start_time=time.monotonic(),
+            details=details or {},
+            ray_operations=[],
+        )
 
-            self.current_phase = phase
-            self.phases.append(phase)
+        self.current_phase = phase
+        self.phases.append(phase)
 
-            self.logger.info(f"Started phase: {name}")
-            if details:
-                self.logger.debug(f"Phase details: {details}")
+        self.logger.info(f"Started phase: {name}")
+        if details:
+            self.logger.debug(f"Phase details: {details}")
 
-            return phase
+        return phase
 
     def _end_phase(self, name: str, details: Dict[str, Any] = None, error: str = None):
         """End tracking the current phase."""
-        with self.lock:
-            if self.current_phase and self.current_phase.name == name:
-                self.current_phase.finish(details, error)
+        if self.current_phase and self.current_phase.name == name:
+            self.current_phase.finish(details, error)
 
-                # Update statistics
-                self.stats["phase_breakdown"][name] = self.current_phase.duration
+            # Update statistics
+            self.stats["phase_breakdown"][name] = self.current_phase.duration
 
-                # Track slow phases
-                if self.current_phase.duration > 5.0:
-                    self.stats["slow_phases"].append(self.current_phase)
+            # Track slow phases
+            if self.current_phase.duration > 5.0:
+                self.stats["slow_phases"].append(self.current_phase)
 
-                # Track failed phases
-                if error:
-                    self.stats["failed_phases"].append(self.current_phase)
+            # Track failed phases
+            if error:
+                self.stats["failed_phases"].append(self.current_phase)
 
-                # Log phase completion
-                self.logger.info(
-                    f"Completed phase: {name} in {self.current_phase.duration:.3f}s"
-                )
-                if error:
-                    self.logger.error(f"Phase {name} failed: {error}")
+            # Log phase completion
+            self.logger.info(
+                f"Completed phase: {name} in {self.current_phase.duration:.3f}s"
+            )
+            if error:
+                self.logger.error(f"Phase {name} failed: {error}")
 
-                self.current_phase = None
+            self.current_phase = None
 
     def _start_ray_operation(
         self,
@@ -232,78 +205,76 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
         fetch_local: bool = True,
     ) -> int:
         """Start tracking a Ray operation."""
-        with self.lock:
-            operation_id = self.operation_counter
-            self.operation_counter += 1
+        operation_id = self.operation_counter
+        self.operation_counter += 1
 
-            worker_id, node_ip = self._get_worker_info()
+        worker_id, node_ip = self._get_worker_info()
 
-            # Determine which phase this operation belongs to
-            phase_context = self.current_phase.name if self.current_phase else "unknown"
+        # Determine which phase this operation belongs to
+        phase_context = self.current_phase.name if self.current_phase else "unknown"
 
-            operation = RayOperation(
-                operation_type=operation_type,
-                start_time=time.monotonic(),
-                object_refs=[str(ref) for ref in object_refs] if object_refs else [],
-                num_objects=len(object_refs) if object_refs else 0,
-                timeout=timeout,
-                fetch_local=fetch_local,
-                stack_trace=self._get_stack_trace(),
-                worker_id=worker_id,
-                node_ip=node_ip,
-                phase_context=phase_context,
-            )
+        operation = RayOperation(
+            operation_type=operation_type,
+            start_time=time.monotonic(),
+            object_refs=[str(ref) for ref in object_refs] if object_refs else [],
+            num_objects=len(object_refs) if object_refs else 0,
+            timeout=timeout,
+            fetch_local=fetch_local,
+            stack_trace=self._get_stack_trace(),
+            worker_id=worker_id,
+            node_ip=node_ip,
+            phase_context=phase_context,
+        )
 
-            self.current_operations[operation_id] = operation
-            self.ray_operations.append(operation)
+        self.current_operations[operation_id] = operation
+        self.ray_operations.append(operation)
 
-            # Add to current phase if available
-            if self.current_phase:
-                self.current_phase.ray_operations.append(operation)
+        # Add to current phase if available
+        if self.current_phase:
+            self.current_phase.ray_operations.append(operation)
 
-            # Log operation start
-            self.logger.debug(
-                f"Started {operation_type} operation {operation_id} in phase '{phase_context}' with "
-                f"{len(object_refs)} objects, timeout={timeout}, fetch_local={fetch_local}"
-            )
+        # Log operation start
+        self.logger.debug(
+            f"Started {operation_type} operation {operation_id} in phase '{phase_context}' with "
+            f"{len(object_refs)} objects, timeout={timeout}, fetch_local={fetch_local}"
+        )
 
-            return operation_id
+        return operation_id
 
     def _end_ray_operation(self, operation_id: int, error: str = None):
         """End tracking a Ray operation."""
-        with self.lock:
-            if operation_id in self.current_operations:
-                operation = self.current_operations[operation_id]
-                operation.finish(error)
+        if operation_id in self.current_operations:
+            operation = self.current_operations[operation_id]
+            operation.finish(error)
 
-                # Update statistics
-                if operation.operation_type == "get":
-                    self.stats["total_get_operations"] += 1
-                    self.stats["total_get_time"] += operation.duration
-                elif operation.operation_type == "wait":
-                    self.stats["total_wait_operations"] += 1
-                    self.stats["total_wait_time"] += operation.duration
+            # Update statistics
+            if operation.operation_type == "get":
+                self.stats["total_get_operations"] += 1
+                self.stats["total_get_time"] += operation.duration
+            elif operation.operation_type == "wait":
+                self.stats["total_wait_operations"] += 1
+                self.stats["total_wait_time"] += operation.duration
 
-                # Track slow operations
-                if operation.duration > 1.0:
-                    self.stats["slow_operations"].append(operation)
+            # Track slow operations
+            if operation.duration > 1.0:
+                self.stats["slow_operations"].append(operation)
 
-                # Track failed operations
-                if error:
-                    self.stats["failed_operations"].append(operation)
+            # Track failed operations
+            if error:
+                self.stats["failed_operations"].append(operation)
 
-                # Track operation patterns
-                pattern_key = f"{operation.operation_type}_{operation.num_objects}_{operation.timeout}"
-                self.operation_patterns[pattern_key] += 1
+            # Track operation patterns
+            pattern_key = f"{operation.operation_type}_{operation.num_objects}_{operation.timeout}"
+            self.operation_patterns[pattern_key] += 1
 
-                # Log operation end
-                self.logger.info(
-                    f"Completed {operation.operation_type} operation {operation_id} in "
-                    f"{operation.duration:.3f}s with {operation.num_objects} objects "
-                    f"(phase: {operation.phase_context})"
-                )
+            # Log operation end
+            self.logger.info(
+                f"Completed {operation.operation_type} operation {operation_id} in "
+                f"{operation.duration:.3f}s with {operation.num_objects} objects "
+                f"(phase: {operation.phase_context})"
+            )
 
-                del self.current_operations[operation_id]
+            del self.current_operations[operation_id]
 
     def _instrument_ray_core(self):
         """Instrument Ray's core get and wait functions."""
@@ -314,6 +285,10 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
         self.original_get = ray_worker.get
         self.original_wait = ray_worker.wait
 
+        # Set global profiler reference
+        global _global_combined_profiler
+        _global_combined_profiler = self
+
         # Instrument ray.get
         @functools.wraps(self.original_get)
         def instrumented_get(object_refs, *, timeout=None):
@@ -321,14 +296,19 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
             if not isinstance(object_refs, list):
                 object_refs = [object_refs]
 
-            operation_id = self._start_ray_operation("get", object_refs, timeout)
+            # Use global profiler reference to avoid closure
+            profiler = _global_combined_profiler
+            if profiler is None:
+                return self.original_get(object_refs, timeout=timeout)
+
+            operation_id = profiler._start_ray_operation("get", object_refs, timeout)
 
             try:
                 result = self.original_get(object_refs, timeout=timeout)
-                self._end_ray_operation(operation_id)
+                profiler._end_ray_operation(operation_id)
                 return result
             except Exception as e:
-                self._end_ray_operation(operation_id, str(e))
+                profiler._end_ray_operation(operation_id, str(e))
                 raise
 
         # Instrument ray.wait
@@ -336,7 +316,17 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
         def instrumented_wait(
             ray_waitables, *, num_returns=1, timeout=None, fetch_local=True
         ):
-            operation_id = self._start_ray_operation(
+            # Use global profiler reference to avoid closure
+            profiler = _global_combined_profiler
+            if profiler is None:
+                return self.original_wait(
+                    ray_waitables,
+                    num_returns=num_returns,
+                    timeout=timeout,
+                    fetch_local=fetch_local,
+                )
+
+            operation_id = profiler._start_ray_operation(
                 "wait", ray_waitables, timeout, fetch_local
             )
 
@@ -347,10 +337,10 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
                     timeout=timeout,
                     fetch_local=fetch_local,
                 )
-                self._end_ray_operation(operation_id)
+                profiler._end_ray_operation(operation_id)
                 return result
             except Exception as e:
-                self._end_ray_operation(operation_id, str(e))
+                profiler._end_ray_operation(operation_id, str(e))
                 raise
 
         # Apply the instrumented versions
@@ -367,6 +357,10 @@ class CombinedWorkerGroupProfiler(WorkerGroupCallback):
             ray_worker.get = self.original_get
         if hasattr(self, "original_wait"):
             ray_worker.wait = self.original_wait
+
+        # Clear global profiler reference
+        global _global_combined_profiler
+        _global_combined_profiler = None
 
         self.logger.info("Restored original Ray core functions")
 
