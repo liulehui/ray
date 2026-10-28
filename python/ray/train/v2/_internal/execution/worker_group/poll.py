@@ -10,6 +10,7 @@ from ray.train.v2._internal.exceptions import (
     UserExceptionWithTraceback,
     WorkerHealthCheckFailedError,
 )
+from ray.train.v2._internal.execution.context import HealthReport
 from ray.train.v2._internal.execution.preemption import PreemptionInfo
 from ray.train.v2._internal.execution.training_report import _TrainingReport
 from ray.train.v2.api.exceptions import WorkerGroupError
@@ -57,6 +58,7 @@ class WorkerStatus:
     return_value: Any = field(default=None)
     preemption_info: Optional[PreemptionInfo] = None
     probe_results: Dict[str, ProbeResult] = field(default_factory=dict)
+    health_report: Optional[HealthReport] = None
 
 
 @dataclass(frozen=True)
